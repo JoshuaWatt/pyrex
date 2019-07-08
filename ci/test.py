@@ -416,7 +416,10 @@ class TestImage(PyrexTest):
         self.assertPyrexContainerCommand('tini --version')
 
     def test_icecc(self):
-        self.assertPyrexContainerCommand('icecc --version')
+        if self.test_image.startswith('base-'):
+            self.skipTest('icecc is not installed on base images.')
+        else:
+            self.assertPyrexContainerCommand('icecc --version')
 
     def test_guest_image(self):
         # This test makes sure that the image being tested is the image we
@@ -424,11 +427,24 @@ class TestImage(PyrexTest):
         if not self.test_image:
             self.skipTest("%s not defined" % TEST_IMAGE_ENV_VAR)
 
+        # Get the test image name (strip out the base-) identifier.
+        image_name = re.sub('^base-', '', self.test_image)
+
+        expected_dist_id = image_name.split('-', 1)[0]
+        expected_release_str = image_name.split('-', 1)[1]
+
+        # Capture the LSB release information.
         dist_id_str = self.assertPyrexContainerCommand('lsb_release -i', quiet_init=True, capture=True).decode('utf-8').rstrip()
         release_str = self.assertPyrexContainerCommand('lsb_release -r', quiet_init=True, capture=True).decode('utf-8').rstrip()
 
-        self.assertRegex(dist_id_str.lower(), r'^distributor id:\s+' + re.escape(self.test_image.split('-', 1)[0]))
-        self.assertRegex(release_str.lower(), r'^release:\s+' + re.escape(self.test_image.split('-', 1)[1]))
+        self.assertRegex(dist_id_str.lower(), r'^distributor id:\s+' + re.escape(expected_dist_id))
+        self.assertRegex(
+            release_str.lower(),
+            # If we are using the centos 7 image, we need to match the
+            # major[.minor[.micro]] version pattern. we only care if the major
+            # version is 7.
+            r'^release:\s+' + re.escape(expected_release_str) + r'\.[0-9]+\.[0-9]+'if expected_dist_id == 'centos' else r''
+        )
 
 if __name__ == "__main__":
     unittest.main()

@@ -114,7 +114,6 @@ RUN mkdir -p /usr/src/tini && \
     make && \
     make install DESTDIR=/dist/tini && \
     mv /dist/tini/usr/local/bin/tini-static /dist/tini/usr/local/bin/tini
-
 #
 # Ubuntu 14.04 base
 #
@@ -122,12 +121,124 @@ FROM ${MY_REGISTRY}ubuntu:trusty as ubuntu-14.04
 LABEL maintainer="Joshua Watt <Joshua.Watt@garmin.com>"
 
 # Install software required to add ppa's
-RUN apt-get -y update && apt-get -y install \
+RUN set -x && export DEBIAN_FRONTEND=noninteractive && apt-get -y update && apt-get -y install \
     python-software-properties \
-    software-properties-common
-
+    sudo \
+    locales \
+    python \
+    python3 \
+    software-properties-common && \
 # Add a non-ancient version of git
-RUN add-apt-repository -y ppa:git-core/ppa
+    add-apt-repository -y ppa:git-core/ppa && \
+# Clean up apt-cache
+    rm -rf /var/lib/apt/lists/* &&\
+# generate utf8 locale
+    locale-gen en_US.UTF-8
+
+# Copy prebuilt items
+COPY --from=prebuilt-setpriv /dist/setpriv /
+COPY --from=prebuilt-tini /dist/tini /
+
+#
+# Ubuntu 16.04 Base
+
+FROM ${MY_REGISTRY}ubuntu:xenial as ubuntu-16.04
+LABEL maintainer="Joshua Watt <Joshua.Watt@garmin.com>"
+
+# Install software required to add ppa's
+RUN set -x && export DEBIAN_FRONTEND=noninteractive && apt-get -y update && apt-get -y install \
+    python-software-properties \
+    locales \
+    sudo \
+    python3 \
+    software-properties-common && \
+# Add a non-ancient version of git to the repo so we can install it in downstream images.
+    add-apt-repository -y ppa:git-core/ppa && \
+# Clean up apt-cache
+    rm -rf /var/lib/apt/lists/* &&\
+# generate utf8 locale
+    locale-gen en_US.UTF-8
+
+# Copy prebuilt items
+COPY --from=prebuilt-setpriv /dist/setpriv /
+COPY --from=prebuilt-tini /dist/tini /
+
+#
+# Ubuntu 18.04 Base
+#
+FROM ${MY_REGISTRY}ubuntu:bionic as ubuntu-18.04
+LABEL maintainer="Joshua Watt <Joshua.Watt@garmin.com>"
+
+RUN set -x && export DEBIAN_FRONTEND=noninteractive && apt-get -y update && apt-get -y install \
+    python \
+    python3 \
+# Tools used by Pyrex
+    lsb-release \
+    setpriv \
+    sudo \
+    locales &&\
+    rm -rf /var/lib/apt/lists/* && \
+# generate utf8 locale
+    locale-gen en_US.UTF-8
+
+# Copy prebuilt items
+COPY --from=prebuilt-tini /dist/tini /
+
+#
+# Centos 7
+#
+FROM ${MY_REGISTRY}centos:7 as centos-7
+LABEL maintainer="James Harris <james.harris@garmin.com>"
+RUN set -x && \
+      #Install default components
+      yum install -y yum-utils \
+          which \
+          sudo \
+          redhat-lsb-core \
+          &&\
+      yum install -y https://centos7.iuscommunity.org/ius-release.rpm &&\
+      yum install -y python36u &&\
+      yum clean all &&\
+      ln -s /usr/bin/python3.6 /usr/bin/python3 &&\
+      localedef -c -f UTF-8 -i en_US en_US.UTF-8
+
+# Copy prebuilt items
+COPY --from=prebuilt-setpriv /dist/setpriv /
+COPY --from=prebuilt-tini /dist/tini /
+
+#
+# Target image
+#
+FROM ${PYREX_BASE} as pyrex-base
+
+# Set Locales
+ENV LANG en_US.UTF-8
+ENV LC_ALL en_US.UTF-8
+
+# Add startup scripts
+COPY ./startup.sh /usr/libexec/tini/startup.sh
+COPY ./entry.py /usr/libexec/tini/entry.py
+COPY ./cleanup.py /usr/libexec/tini/cleanup.py
+RUN chmod +x /usr/libexec/tini/cleanup.py \
+    /usr/libexec/tini/entry.py \
+    /usr/libexec/tini/startup.sh
+
+# Precompile python files for improved startup time
+RUN python3 -m py_compile /usr/libexec/tini/*.py
+
+# Use tini as the init process and instruct it to invoke the cleanup script
+# once the primary command dies
+ENTRYPOINT ["/usr/local/bin/tini", "-P", "/usr/libexec/tini/cleanup.py", "{}", ";", "--", "/usr/libexec/tini/entry.py", "/usr/libexec/tini/startup.sh"]
+
+# The startup script is expected to chain along to some other
+# command. By default, we'll use an interactive shell.
+CMD ["/bin/bash"]
+
+#
+# Ubuntu 14.04 Yocto Base
+#
+FROM ubuntu-14.04 as ubuntu-14.04-yocto
+LABEL maintainer="Joshua Watt <Joshua.Watt@garmin.com>"
 
 RUN export DEBIAN_FRONTEND=noninteractive && apt-get -y update && apt-get -y install \
 # Poky 2.0 build dependencies
@@ -197,22 +308,12 @@ RUN export DEBIAN_FRONTEND=noninteractive && apt-get -y update && apt-get -y ins
 
 # Copy prebuilt items
 COPY --from=prebuilt-icecream /dist/icecream /
-COPY --from=prebuilt-setpriv /dist/setpriv /
-COPY --from=prebuilt-tini /dist/tini /
 
 #
-# Ubuntu 16.04 Base
+# Ubuntu 16.04 Yocto Base
 #
-FROM ${MY_REGISTRY}ubuntu:xenial as ubuntu-16.04
+FROM ubuntu-16.04 as ubuntu-16.04-yocto
 LABEL maintainer="Joshua Watt <Joshua.Watt@garmin.com>"
-
-# Install software required to add ppa's
-RUN apt-get -y update && apt-get -y install \
-    python-software-properties \
-    software-properties-common
-
-# Add a non-ancient version of git
-RUN add-apt-repository -y ppa:git-core/ppa
 
 RUN export DEBIAN_FRONTEND=noninteractive && apt-get -y update && apt-get -y install \
 # Poky 2.7 build dependencies
@@ -277,13 +378,11 @@ RUN python3 -m pip install jinja2 iterfzf
 
 # Copy prebuilt items
 COPY --from=prebuilt-icecream /dist/icecream /
-COPY --from=prebuilt-setpriv /dist/setpriv /
-COPY --from=prebuilt-tini /dist/tini /
 
 #
 # Ubuntu 18.04 Base
 #
-FROM ${MY_REGISTRY}ubuntu:bionic as ubuntu-18.04
+FROM ubuntu-18.04 as ubuntu-18.04-yocto
 LABEL maintainer="Joshua Watt <Joshua.Watt@garmin.com>"
 
 RUN export DEBIAN_FRONTEND=noninteractive && apt-get -y update && apt-get -y install \
@@ -336,9 +435,6 @@ RUN export DEBIAN_FRONTEND=noninteractive && apt-get -y update && apt-get -y ins
     g++-multilib \
 # Screen to enable devshell
     screen \
-# Tools used by Pyrex
-    lsb-release \
-    setpriv \
 # Base OS stuff that reasonable workstations have, but which the Docker
 # registry image doesn't
     tzdata \
@@ -349,12 +445,11 @@ RUN python3 -m pip install iterfzf
 
 # Copy prebuilt items
 COPY --from=prebuilt-icecream /dist/icecream /
-COPY --from=prebuilt-tini /dist/tini /
 
-# 
+#
 # Target image
 #
-FROM ${PYREX_BASE}
+FROM ${PYREX_BASE}-yocto
 
 # Setup Icecream distributed compiling client. The client tries several IPC
 # mechanisms to find the daemon, including connecting to a localhost TCP

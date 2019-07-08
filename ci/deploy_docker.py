@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import re
 import requests
 import subprocess
 import sys
@@ -42,9 +43,24 @@ def main():
         return 1
 
     print("Building", name)
+    # Construct the arguments for the build command.
+    docker_build_args = [
+        '-t', name,
+        '-f', '%s/Dockerfile' % docker_dir,
+        '--build-arg', 'PYREX_BASE=%s' % re.sub('^base-', '', image)
+    ]
+    # If we are a base image then we need to build the base image as a name.
+    if image.startswith('base-'):
+        # If we are building a 'base-*' image then we should build the pyrex-base target.
+        docker_build_args.extend([
+            '--target', 'pyrex-base'
+        ])
+
+    # Add the build context directory to our arguments.
+    docker_build_args.extend(['--', docker_dir])
+
     try:
-        subprocess.check_call(['docker', 'build', '-t', name, '-f', '%s/Dockerfile' % docker_dir,
-                               '--build-arg', 'PYREX_BASE=%s' % image, '--', docker_dir])
+        subprocess.check_call(['docker', 'build'] + docker_build_args)
     except subprocess.CalledProcessError as e:
         print("Building failed!")
         return 1

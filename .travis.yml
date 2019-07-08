@@ -9,6 +9,10 @@ env:
   - TEST_IMAGE=ubuntu-14.04
   - TEST_IMAGE=ubuntu-16.04
   - TEST_IMAGE=ubuntu-18.04
+  - TEST_IMAGE=base-ubuntu-14.04
+  - TEST_IMAGE=base-ubuntu-16.04
+  - TEST_IMAGE=base-ubuntu-18.04
+  - TEST_IMAGE=base-centos-7
 before_install:
 - "./ci/prepare.sh"
 - |
