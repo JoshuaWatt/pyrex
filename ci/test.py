@@ -27,8 +27,11 @@ import tempfile
 import threading
 import unittest
 import pty
+import traceback
+import time
 
-PYREX_ROOT = os.path.join(os.path.dirname(__file__), '..')
+THIS_DIR = os.path.abspath(os.path.dirname(__file__))
+PYREX_ROOT = os.path.join(THIS_DIR, '..')
 sys.path.append(PYREX_ROOT)
 import pyrex
 
@@ -43,7 +46,7 @@ def skipIfPrebuilt(func):
 
 class PyrexTest(object):
     def setUp(self):
-        self.build_dir = os.path.abspath(os.path.join(PYREX_ROOT, 'build'))
+        self.build_dir = os.path.abspath(os.path.join(PYREX_ROOT, 'build', "%d" % os.getpid()))
 
         def cleanup_build():
             if os.path.isdir(self.build_dir):
@@ -71,8 +74,8 @@ class PyrexTest(object):
         os.environ['PYREX_DOCKER_BUILD_QUIET'] = '0'
         self.addCleanup(cleanup_env)
 
-        self.thread_dir = os.path.join(self.build_dir, "%d.%d" % (os.getpid(), threading.get_ident()))
-        os.makedirs(self.thread_dir)
+        self.temp_dir = os.path.join(self.build_dir, "citemp")
+        os.makedirs(self.temp_dir)
 
         # Write out the default test config
         conf = self.get_config()
@@ -136,9 +139,9 @@ class PyrexTest(object):
             return None
 
     def _write_host_command(self, args, quiet_init=False):
-        cmd_file = os.path.join(self.thread_dir, 'command')
+        cmd_file = os.path.join(self.temp_dir, 'command')
         with open(cmd_file, 'w') as f:
-            f.write('. ./poky/pyrex-init-build-env ')
+            f.write('. ./poky/pyrex-init-build-env %s ' % self.build_dir)
             if quiet_init:
                 f.write('> /dev/null 2>&1 ')
             f.write('&& ')
@@ -146,7 +149,7 @@ class PyrexTest(object):
         return cmd_file
 
     def _write_container_command(self, args):
-        cmd_file = os.path.join(self.thread_dir, 'container_command')
+        cmd_file = os.path.join(self.temp_dir, 'container_command')
         with open(cmd_file, 'w') as f:
             f.write(' && '.join(args))
         return cmd_file
@@ -166,13 +169,6 @@ class PyrexTest(object):
         container_cmd_file = self._write_container_command(args)
         host_cmd_file = self._write_host_command(['pyrex-shell %s' % container_cmd_file], quiet_init)
         stdout = []
-        def master_read(fd):
-            while True:
-                data = os.read(fd, 1024)
-                if not data:
-                    return data
-
-                stdout.append(data)
 
         old_env = None
         try:
@@ -181,7 +177,25 @@ class PyrexTest(object):
                 os.environ.clear()
                 os.environ.update(env)
 
-            status = pty.spawn(['/bin/bash', host_cmd_file], master_read)
+            sys.stdout.flush()
+            sys.stderr.flush()
+            (pid, fd) = pty.fork()
+            if pid == 0:
+                os.chdir(PYREX_ROOT)
+                os.execl('/bin/bash', '/bin/bash', host_cmd_file)
+                sys.exit(1)
+
+            while True:
+                try:
+                    data = os.read(fd, 1024)
+                    if not data:
+                        break
+                except OSError:
+                    break
+
+                stdout.append(data)
+
+            (_, status) = os.waitpid(pid, 0)
         finally:
             if old_env is not None:
                 os.environ.clear()
@@ -189,7 +203,7 @@ class PyrexTest(object):
 
         self.assertFalse(os.WIFSIGNALED(status), msg='%s died from a signal: %s' % (' '.join(args), os.WTERMSIG(status)))
         self.assertTrue(os.WIFEXITED(status), msg='%s exited abnormally' % ' '.join(args))
-        self.assertEqual(os.WEXITSTATUS(status), returncode, msg='%s failed' % ' '.join(args))
+        self.assertEqual(os.WEXITSTATUS(status), returncode, msg='%s failed %s' % (' '.join(args), stdout))
         return b''.join(stdout)
 
 class PyrexImageType_base(PyrexTest):
@@ -211,7 +225,7 @@ class PyrexImageType_base(PyrexTest):
         with open('/proc/self/cgroup', 'r') as f:
             cgroup = f.read()
 
-        pyrex_cgroup_file = os.path.join(self.thread_dir, 'pyrex_cgroup')
+        pyrex_cgroup_file = os.path.join(self.temp_dir, 'pyrex_cgroup')
 
         # Capture cgroups when pyrex is enabled
         self.assertPyrexContainerShellCommand('cat /proc/self/cgroup > %s' % pyrex_cgroup_file)
@@ -257,7 +271,7 @@ class PyrexImageType_base(PyrexTest):
         # Test that files created in docker are the same UID/GID as the user
         # running outside
 
-        test_file = os.path.join(self.thread_dir, 'ownertest')
+        test_file = os.path.join(self.temp_dir, 'ownertest')
         if os.path.exists(test_file):
             os.unlink(test_file)
 
@@ -294,7 +308,7 @@ class PyrexImageType_base(PyrexTest):
         old_umask = os.umask(0)
         self.addCleanup(os.umask, old_umask)
 
-        fifo = os.path.join(self.thread_dir, 'fifo')
+        fifo = os.path.join(self.temp_dir, 'fifo')
         os.mkfifo(fifo)
         self.addCleanup(os.remove, fifo)
 
@@ -402,7 +416,7 @@ class PyrexImageType_base(PyrexTest):
         # used
         conf = self.get_config()
         conf['config']['test'] = 'bar'
-        force_conf_file = os.path.join(self.thread_dir, 'force.ini')
+        force_conf_file = os.path.join(self.temp_dir, 'force.ini')
         with open(force_conf_file, 'w') as f:
             conf.write(f)
 
@@ -556,7 +570,7 @@ class PyrexImageType_oe(PyrexImageType_base):
         self.assertPyrexContainerCommand('icecc --version')
 
     def test_templateconf_abs(self):
-        template_dir = os.path.join(self.thread_dir, 'template')
+        template_dir = os.path.join(self.temp_dir, 'template')
         os.makedirs(template_dir)
 
         self.assertTrue(os.path.isabs(template_dir))
@@ -585,7 +599,7 @@ class PyrexImageType_oe(PyrexImageType_base):
         self.assertEqual(s, test_string)
 
     def test_templateconf_rel(self):
-        template_dir = os.path.join(self.thread_dir, 'template')
+        template_dir = os.path.join(self.temp_dir, 'template')
         os.makedirs(template_dir)
 
         self.assertTrue(os.path.isabs(template_dir))
@@ -629,5 +643,173 @@ def add_image_tests():
 
 add_image_tests()
 
+def _run_test(suite, args, queue, stoptests):
+    class ResultClass(unittest.TestResult):
+        def __init__(self):
+            super().__init__()
+            self._shouldStop = False
+
+        @property
+        def shouldStop(self):
+            if self.failfast and stoptests.value:
+                True
+            return self._shouldStop
+
+        @shouldStop.setter
+        def shouldStop(self, value):
+            self._shouldStop = value
+
+        def stop(self):
+            self._shouldStop = True
+            if self.failfast:
+                stoptests.value = True
+
+        def sendTestResult(self, test, msg):
+            queue.put("%s ... %s" % (test, msg))
+
+        def addError(self, test, err):
+            super().addError(test, err)
+            self.sendTestResult(test, 'ERROR\n%s' % ''.join(traceback.format_exception(*err)))
+
+        def addFailure(self, test, err):
+            super().addFailure(test, err)
+            self.sendTestResult(test, 'FAIL\n%s' % ''.join(traceback.format_exception(*err)))
+
+        def addSuccess(self, test):
+            super().addSuccess(test)
+            self.sendTestResult(test, 'ok')
+
+        def addSkip(self, test, reason):
+            super().addSkip(test, reason)
+            self.sendTestResult(test, 'skipped %r' % reason)
+
+        def addExpectedFailure(self, test, err):
+            super().addExpectedFailure(self, test, err)
+            self.sendTestResult(test, 'expected failure')
+
+        def addUnexpectedSuccess(self, test):
+            super().addUnexpectedSuccess(self, test)
+            self.sendTestResult(test, 'unexpected success')
+
+        def addSubTest(self, test, subtest, outcome):
+            super().addSubTest(test, subtest, outcome)
+
+    results = ResultClass()
+    results.buffer = True
+    results.failfast = args.failfast
+    suite.run(results)
+
+    queue.put(None)
+
+    return (results.testsRun, len(results.errors), len(results.failures), len(results.skipped), len(results.expectedFailures), len(results.unexpectedSuccesses))
+
+def run_tests():
+    import multiprocessing
+    import queue
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Run Pyrex CI tests')
+    parser.add_argument('-v', '--verbose', dest='verbosity', action='count', default=0, help='Verbose output')
+    parser.add_argument('-f', '--failfast', action='store_true', help='Stop on first fail or error')
+    parser.add_argument('-k', dest='testnamepatterns', help='Only run tests which match the given substring')
+    parser.add_argument('-j', '--jobs', metavar='COUNT', type=int, default=0,
+                        help='The number of tests to process in parallel (default is 0, one per CPU core')
+
+    args = parser.parse_args()
+
+    loader = unittest.TestLoader()
+
+    if args.testnamepatterns:
+        loader.testNamePatterns = (args.testnamepatterns,)
+
+    start_time = time.perf_counter()
+
+    test_suites = loader.discover(THIS_DIR)
+
+    with multiprocessing.Manager() as manager, multiprocessing.Pool(args.jobs or multiprocessing.cpu_count()) as pool:
+        q = manager.Queue()
+        stoptests = manager.Value('b', False)
+
+        results = []
+        total_test_count = 0
+        for test_file in test_suites:
+            for test_class in test_file:
+                if test_class.countTestCases():
+                    results.append(pool.apply_async(_run_test, (test_class, args, q, stoptests)))
+                    total_test_count += test_class.countTestCases()
+        pool.close()
+
+        total_testsRan = 0
+        total_errors = 0
+        total_failures = 0
+        total_skipped = 0
+        total_expectedFailures = 0
+        total_unexpectedSuccesses = 0
+
+        test_count = 0
+        while results:
+            try:
+                m = q.get(timeout=0.5)
+            except queue.Empty:
+                m = None
+
+            if m is None:
+                pending = []
+                for r in results:
+                    if r.ready():
+                        (testsRan, errors, failures, skipped, expectedFailures, unexpectedSuccesses) = r.get()
+                        total_testsRan += testsRan
+                        total_errors += errors
+                        total_failures += failures
+                        total_skipped += skipped
+                        total_expectedFailures += expectedFailures
+                        total_unexpectedSuccesses += unexpectedSuccesses
+                    else:
+                        pending.append(r)
+
+                results = pending
+            else:
+                test_count += 1
+                if m:
+                    print('[%d/%d] %s' % (test_count, total_test_count, m))
+
+        pool.join()
+
+    stop_time = time.perf_counter()
+
+    print('-' * 70)
+    print('Ran %d test%s in %.3fs' % (total_testsRan, "s" if total_testsRan != 1 else "", stop_time - start_time))
+    print()
+    infos = []
+
+    if total_errors or total_failures:
+        success = False
+        if total_failures:
+            infos.append("failures=%d" % total_failures)
+        if total_errors:
+            infos.append("errors=%d" % total_errors)
+    else:
+        success = True
+
+    if total_skipped:
+        infos.append("skipped=%d" % total_skipped)
+    if total_expectedFailures:
+        infos.append("expected failures=%d" % total_expectedFailures)
+    if total_unexpectedSuccesses:
+        infos.append("unexpected successes=%d" % total_unexpectedSuccesses)
+
+    if success:
+        status = "OK"
+    else:
+        status = "FAILED"
+
+    if infos:
+        print("%s (%s)" % (status, " ,".join(infos)))
+    else:
+        print(status)
+
+    sys.exit(int(not success))
+
+
 if __name__ == "__main__":
-    unittest.main()
+    run_tests()
