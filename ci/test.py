@@ -651,7 +651,7 @@ def _run_test(suite, args, queue, stoptests):
 
         @property
         def shouldStop(self):
-            if self.failfast and stoptests.value:
+            if self.failfast and stoptests is not None and stoptests.value:
                 True
             return self._shouldStop
 
@@ -661,7 +661,7 @@ def _run_test(suite, args, queue, stoptests):
 
         def stop(self):
             self._shouldStop = True
-            if self.failfast:
+            if self.failfast and stoptests is not None:
                 stoptests.value = True
 
         def sendTestResult(self, test, msg):
@@ -704,8 +704,23 @@ def _run_test(suite, args, queue, stoptests):
     return (results.testsRun, len(results.errors), len(results.failures), len(results.skipped), len(results.expectedFailures), len(results.unexpectedSuccesses))
 
 def run_tests():
-    import multiprocessing
-    import queue
+    class Results(object):
+        def __init__(self):
+            self.testsRan = 0
+            self.errors = 0
+            self.failures = 0
+            self.skipped = 0
+            self.expectedFailures = 0
+            self.unexpectedSuccesses = 0
+
+        def add(self, testsRan, errors, failures, skipped, expectedFailures, unexpectedSuccesses):
+            self.testsRan += testsRan
+            self.errors += errors
+            self.failures += failures
+            self.skipped += skipped
+            self.expectedFailures += expectedFailures
+            self.unexpectedSuccesses += unexpectedSuccesses
+
     import argparse
 
     parser = argparse.ArgumentParser(description='Run Pyrex CI tests')
@@ -726,77 +741,80 @@ def run_tests():
 
     test_suites = loader.discover(THIS_DIR)
 
-    with multiprocessing.Manager() as manager, multiprocessing.Pool(args.jobs or multiprocessing.cpu_count()) as pool:
-        q = manager.Queue()
-        stoptests = manager.Value('b', False)
+    results = Results()
 
-        results = []
-        total_test_count = 0
-        for test_file in test_suites:
-            for test_class in test_file:
-                if test_class.countTestCases():
-                    results.append(pool.apply_async(_run_test, (test_class, args, q, stoptests)))
-                    total_test_count += test_class.countTestCases()
-        pool.close()
+    if args.jobs == 1:
+        class StdoutQueue(object):
+            def __init__(self):
+                pass
 
-        total_testsRan = 0
-        total_errors = 0
-        total_failures = 0
-        total_skipped = 0
-        total_expectedFailures = 0
-        total_unexpectedSuccesses = 0
+            def put(self, message):
+                if message is not None:
+                    print(message)
 
-        test_count = 0
-        while results:
-            try:
-                m = q.get(timeout=0.5)
-            except queue.Empty:
-                m = None
+        q = StdoutQueue()
+        results.add(*_run_test(test_suites, args, q, None))
+    else:
+        import multiprocessing
+        import queue
+        with multiprocessing.Manager() as manager, multiprocessing.Pool(args.jobs or multiprocessing.cpu_count()) as pool:
+            q = manager.Queue()
+            stoptests = manager.Value('b', False)
 
-            if m is None:
-                pending = []
-                for r in results:
-                    if r.ready():
-                        (testsRan, errors, failures, skipped, expectedFailures, unexpectedSuccesses) = r.get()
-                        total_testsRan += testsRan
-                        total_errors += errors
-                        total_failures += failures
-                        total_skipped += skipped
-                        total_expectedFailures += expectedFailures
-                        total_unexpectedSuccesses += unexpectedSuccesses
-                    else:
-                        pending.append(r)
+            worker_results = []
+            total_test_count = 0
+            for test_file in test_suites:
+                for test_class in test_file:
+                    if test_class.countTestCases():
+                        worker_results.append(pool.apply_async(_run_test, (test_class, args, q, stoptests)))
+                        total_test_count += test_class.countTestCases()
+            pool.close()
 
-                results = pending
-            else:
-                test_count += 1
-                if m:
-                    print('[%d/%d] %s' % (test_count, total_test_count, m))
+            test_count = 0
+            while worker_results:
+                try:
+                    m = q.get(timeout=0.5)
+                except queue.Empty:
+                    m = None
 
-        pool.join()
+                if m is None:
+                    pending = []
+                    for r in worker_results:
+                        if r.ready():
+                            results.add(*r.get())
+                        else:
+                            pending.append(r)
+
+                    worker_results = pending
+                else:
+                    test_count += 1
+                    if m:
+                        print('[%d/%d] %s' % (test_count, total_test_count, m))
+
+            pool.join()
 
     stop_time = time.perf_counter()
 
     print('-' * 70)
-    print('Ran %d test%s in %.3fs' % (total_testsRan, "s" if total_testsRan != 1 else "", stop_time - start_time))
+    print('Ran %d test%s in %.3fs' % (results.testsRan, "s" if results.testsRan != 1 else "", stop_time - start_time))
     print()
     infos = []
 
-    if total_errors or total_failures:
+    if results.errors or results.failures:
         success = False
-        if total_failures:
-            infos.append("failures=%d" % total_failures)
-        if total_errors:
-            infos.append("errors=%d" % total_errors)
+        if results.failures:
+            infos.append("failures=%d" % results.failures)
+        if results.errors:
+            infos.append("errors=%d" % results.errors)
     else:
         success = True
 
-    if total_skipped:
-        infos.append("skipped=%d" % total_skipped)
-    if total_expectedFailures:
-        infos.append("expected failures=%d" % total_expectedFailures)
-    if total_unexpectedSuccesses:
-        infos.append("unexpected successes=%d" % total_unexpectedSuccesses)
+    if results.skipped:
+        infos.append("skipped=%d" % results.skipped)
+    if results.expectedFailures:
+        infos.append("expected failures=%d" % results.expectedFailures)
+    if results.unexpectedSuccesses:
+        infos.append("unexpected successes=%d" % results.unexpectedSuccesses)
 
     if success:
         status = "OK"
