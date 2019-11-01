@@ -27,7 +27,7 @@ import threading
 import unittest
 import pty
 
-PYREX_ROOT = os.path.join(os.path.dirname(__file__), '..')
+PYREX_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(PYREX_ROOT)
 import pyrex  # NOQA
 
@@ -44,20 +44,16 @@ def skipIfPrebuilt(func):
 
 class PyrexTest(object):
     def setUp(self):
-        self.build_dir = os.path.abspath(os.path.join(PYREX_ROOT, 'build'))
+        self.build_dir = os.path.join(PYREX_ROOT, 'build')
 
         def cleanup_build():
             if os.path.isdir(self.build_dir):
                 shutil.rmtree(self.build_dir)
-
+        self.addCleanup(cleanup_build)
         cleanup_build()
         os.makedirs(self.build_dir)
-        self.addCleanup(cleanup_build)
 
-        conf_dir = os.path.join(self.build_dir, 'conf')
-        os.makedirs(conf_dir)
-
-        self.pyrex_conf = os.path.join(conf_dir, 'pyrex.ini')
+        self.pyrex_conf = self.prepare_build_dir(self.build_dir)
 
         def cleanup_env():
             os.environ.clear()
@@ -75,22 +71,40 @@ class PyrexTest(object):
         self.thread_dir = os.path.join(self.build_dir, "%d.%d" % (os.getpid(), threading.get_ident()))
         os.makedirs(self.thread_dir)
 
+    def prepare_build_dir(self, build_dir):
+        def cleanup_build():
+            if os.path.isdir(build_dir):
+                shutil.rmtree(build_dir)
+
+        conf_dir = os.path.join(build_dir, 'conf')
+        try:
+            os.makedirs(conf_dir)
+        except FileExistsError:
+            pass
+
+        pyrex_conf = os.path.join(conf_dir, 'pyrex.ini')
+
         # Write out the default test config
-        conf = self.get_config()
+        conf = self.get_config(pyrex_conf=pyrex_conf)
         conf.write_conf()
 
-    def get_config(self, defaults=False):
+        return pyrex_conf
+
+    def get_config(self, *, defaults=False, pyrex_conf=None):
+        if pyrex_conf is None:
+            pyrex_conf = self.pyrex_conf
+
         class Config(configparser.RawConfigParser):
             def write_conf(self):
                 write_config_helper(self)
 
         def write_config_helper(conf):
-            with open(self.pyrex_conf, 'w') as f:
+            with open(pyrex_conf, 'w') as f:
                 conf.write(f)
 
         config = Config()
-        if os.path.exists(self.pyrex_conf) and not defaults:
-            config.read(self.pyrex_conf)
+        if os.path.exists(pyrex_conf) and not defaults:
+            config.read(pyrex_conf)
         else:
             config.read_string(pyrex.read_default_config(True))
 
@@ -136,14 +150,15 @@ class PyrexTest(object):
             self.assertEqual(ret, returncode, msg='%s failed' % ' '.join(*args))
             return None
 
-    def _write_host_command(self, args, quiet_init=False):
+    def _write_host_command(self, args, quiet_init=False, cwd=PYREX_ROOT):
         cmd_file = os.path.join(self.thread_dir, 'command')
         with open(cmd_file, 'w') as f:
-            f.write('. ./poky/pyrex-init-build-env ')
+            f.write('. %s/poky/pyrex-init-build-env ' % PYREX_ROOT)
             if quiet_init:
                 f.write('> /dev/null 2>&1 ')
-            f.write('&& ')
+            f.write('&& (')
             f.write(' && '.join(list(args)))
+            f.write(')')
         return cmd_file
 
     def _write_container_command(self, args):
@@ -152,9 +167,9 @@ class PyrexTest(object):
             f.write(' && '.join(args))
         return cmd_file
 
-    def assertPyrexHostCommand(self, *args, quiet_init=False, **kwargs):
-        cmd_file = self._write_host_command(args, quiet_init)
-        return self.assertSubprocess(['/bin/bash', cmd_file], cwd=PYREX_ROOT, **kwargs)
+    def assertPyrexHostCommand(self, *args, quiet_init=False, cwd=PYREX_ROOT, **kwargs):
+        cmd_file = self._write_host_command(args, quiet_init, cwd=cwd)
+        return self.assertSubprocess(['/bin/bash', cmd_file], cwd=cwd, **kwargs)
 
     def assertPyrexContainerShellCommand(self, *args, **kwargs):
         cmd_file = self._write_container_command(args)
@@ -667,6 +682,36 @@ class PyrexImageType_oe(PyrexImageType_base):
         s = self.assertPyrexContainerShellCommand(
             'echo $TEST_ENV', env=env, quiet_init=True, capture=True).decode('utf-8').rstrip()
         self.assertEqual(s, test_string)
+
+    def test_top_dir(self):
+        # Verify that the TOPDIR reported by bitbake in pyrex is the same as
+        # the one reported by bitbake outside of pyrex
+        cwd = os.path.join(self.build_dir, 'oe-build')
+        try:
+            os.makedirs(cwd)
+        except OSError:
+            pass
+
+        builddir = os.path.join(cwd, 'build')
+
+        self.prepare_build_dir(builddir)
+        oe_topdir = self.assertSubprocess(['/bin/bash', '-c',
+                                           '. %s/oe-init-build-env > /dev/null && (bitbake -e | grep ^TOPDIR=)' %
+                                           os.path.relpath(os.path.join(PYREX_ROOT, 'poky'), cwd)],
+                                          capture=True,
+                                          cwd=cwd).decode('utf-8')
+
+        shutil.rmtree(builddir)
+
+        self.prepare_build_dir(builddir)
+        pyrex_topdir = self.assertPyrexHostCommand(
+            'bitbake -e | grep ^TOPDIR=',
+            quiet_init=True,
+            capture=True,
+            cwd=cwd).decode('utf-8')
+        shutil.rmtree(builddir)
+
+        self.assertEqual(oe_topdir, pyrex_topdir)
 
 
 TEST_IMAGES = ('ubuntu-14.04-base', 'ubuntu-16.04-base', 'ubuntu-18.04-base', 'centos-7-base',
