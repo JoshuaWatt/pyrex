@@ -459,6 +459,9 @@ class PyrexImageType_base(PyrexTest):
 
     @skipIfPrebuilt
     def test_local_build(self):
+        if self.docker_provider == 'podman':
+            raise self.skipTest('Local build too slow with podman')
+
         conf = self.get_config()
         conf['config']['buildlocal'] = '1'
         conf.write_conf()
