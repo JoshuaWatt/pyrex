@@ -26,54 +26,85 @@ import string
 import subprocess
 import sys
 import tempfile
+import time
 
-
-class D(dict):
-    def __getitem__(self, idx):
-        return self.get(idx, '')
-
+PYREX_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 def forward():
     os.execvp('podman', ['podman'] + sys.argv[1:])
     sys.exit(1)
 
-
-def process_targets(cur, targets):
-    if cur not in targets:
-        return set()
-
-    s = set((cur,))
-    for c in targets[cur]:
-        s.update(process_targets(c, targets))
-
-    return s
+def call_buildkit(args):
+    rootlesskit = os.environ.get('ROOTLESSKIT', os.path.join(PYREX_ROOT, 'buildkit', 'bin', 'rootlesskit'))
+    buildkitd = os.environ.get('BUILDKITD', os.path.join(PYREX_ROOT, 'buildkit', 'bin', 'buildkitd'))
+    buildctl = os.environ.get('BUILDCTL', os.path.join(PYREX_ROOT, 'buildkit', 'bin', 'buildctl'))
+    podman = os.environ.get('PODMAN', 'podman')
+    buildkit_cache = os.environ.get('BUILDKIT_CACHE', os.path.join(PYREX_ROOT, 'buildkit', 'cache'))
 
 
-def docker_file_lines(lines, build_args):
-    current_target = None
 
-    for l in lines:
-        if l.lower().startswith('from'):
-            expanded = string.Template(l).substitute(build_args)
-            m = re.match(r'FROM\s+(?P<parent>\S+)\s+AS\s+(?P<name>\S+)', expanded, re.IGNORECASE)
-            if m is not None:
-                current_target = m.group('name')
-                yield (l, current_target, 'from', m)
-                continue
+    with tempfile.TemporaryDirectory(prefix='pyrex-buildkit-') as tempdir:
 
-            m = re.match(r'FROM\s+(?P<parent>\S+)', expanded, re.IGNORECASE)
-            if m is not None:
-                current_target = None
+        image_tar = os.path.join(tempdir, 'image.tar')
+        addr = '--addr=unix://%s/buildkitd.sock' % tempdir
 
-        if l.lower().startswith('copy'):
-            expanded = string.Template(l).substitute(build_args)
-            m = re.match(r'COPY\s+--from=(?P<from>\S+)', expanded, re.IGNORECASE)
-            if m is not None:
-                yield (l, current_target, 'copy', m)
-                continue
+        p = subprocess.Popen([rootlesskit, buildkitd, addr])
+        try:
+            print("Daemon spawned with pid %d" % p.pid)
 
-        yield (l, current_target, '', None)
+            tries = 0
+            while True:
+                if subprocess.run([buildctl, addr, 'debug', 'workers'], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT).returncode == 0:
+                    break
 
+                if tries < 1000:
+                    tries += 1
+                    time.sleep(.01)
+                else:
+                    print("Could not connect to daemon after %d tries" % tries)
+                    return 1
+
+            buildkit_args = [
+                buildctl,
+                addr,
+                'build',
+                '--frontend', 'dockerfile.v0',
+                '--local', 'dockerfile=%s' % (os.path.dirname(args.file) if args.file else '.'),
+                '--local', 'context=%s' % args.path,
+                '--output', 'type=oci,dest=%s' % image_tar,
+                ]
+
+            if args.target:
+                buildkit_args.extend(['--opt', 'target=%s' % args.target])
+
+            for a in args.build_arg:
+                buildkit_args.extend(['--opt', 'build-arg:%s' % a])
+
+            print(' '.join(buildkit_args))
+
+            subprocess.check_call(buildkit_args)
+
+            podman_args = [
+                podman,
+                'load',
+                '-i', image_tar,
+                ]
+
+            if args.tag:
+                podman_args.append(args.tag)
+
+            subprocess.check_call(podman_args)
+            #buildctl_p = subprocess.Popen(buildkit_args, stdout=subprocess.PIPE)
+            #podman_p = subprocess.Popen(podman_args, stdin=buildctl_p.stdout)
+
+            #buildctl_p.wait()
+            #podman_p.wait()
+
+        finally:
+            p.kill()
+            p.wait()
+
+    return 0
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] != 'build':
@@ -85,47 +116,13 @@ def main():
     parser.add_argument('--file', '-f', default='Dockerfile',
                         help='Docker file')
     parser.add_argument('--target', help='set target build stage to build')
+    parser.add_argument('--network', help='Set the networking mode for the RUN instructions during build', choices=('bridge', 'host', 'overlay', 'none'))
+    parser.add_argument('--tag', '-t', help='Name and optionally tag in the `name:tag` format')
+    parser.add_argument('path', help='Context path')
 
-    (args, extra) = parser.parse_known_args(sys.argv[2:])
+    args = parser.parse_args(sys.argv[2:])
 
-    if not args.target:
-        forward()
-
-    build_args = D()
-    for b in args.build_arg:
-        name, value = b.split('=', 1)
-        build_args[name] = value
-
-    with open(args.file, 'r') as f:
-        docker_file = [l.rstrip() for l in f.readlines()]
-
-    # Process docker file for build target dependencies
-    targets = {}
-    for l, current_target, inst, data in docker_file_lines(docker_file, build_args):
-        if inst == 'from':
-            targets[current_target] = set((data.group('parent'),))
-        elif inst == 'copy':
-            targets[current_target].add(data.group('from'))
-
-    needed_targets = process_targets(args.target, targets)
-
-    # Create a new docker file that only contains the necessary build
-    # dependencies
-    new_file = []
-    for l, current_target, _, _ in docker_file_lines(docker_file, build_args):
-        if current_target is None or current_target in needed_targets:
-            new_file.append(l)
-        else:
-            new_file.append('')
-
-    with tempfile.NamedTemporaryFile() as t:
-        t.write('\n'.join(new_file).encode('utf-8'))
-        t.flush()
-        return subprocess.call(['podman', 'build', '--target', args.target, '-f', t.name] +
-                               ['--build-arg=%s' % arg for arg in args.build_arg] + extra)
-
-    return 0
-
+    return call_buildkit(args)
 
 if __name__ == "__main__":
     sys.exit(main())
