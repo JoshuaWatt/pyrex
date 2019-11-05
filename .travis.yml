@@ -4,12 +4,6 @@ python:
 - '3.4'
 env:
   matrix:
-  - TEST_IMAGE=centos-7-base      SH=bash
-  - TEST_IMAGE=ubuntu-14.04-base  SH=bash
-  - TEST_IMAGE=ubuntu-14.04-oe    SH=bash
-  - TEST_IMAGE=ubuntu-16.04-base  SH=bash
-  - TEST_IMAGE=ubuntu-16.04-oe    SH=bash
-  - TEST_IMAGE=ubuntu-18.04-base  SH=bash
   - TEST_IMAGE=ubuntu-18.04-oe    SH=zsh
   global:
   - secure: Lr+dsOabZwFuCQbOHL0px61zYRjiUTFkBTxGB5g4OfCUxMq4nA87naRQjSUARR5aZo55pli+ceKVcmIt568L3Z7x5ByHZoCUriwgb+ud2ks6nuWBWpAGleQHzHGbQ0QlQwm1k8IVY4OAiUJz2+yfpcOY3Y89bc/oJJEaonI/a7Qh7PJJ8Hch4P2st6+Pwi49T9WN+SUN1sh76fhzqoD/8M6B5pC7QEbYEnPI4tWS3Q0Tf8m64NEwTIgtKXbpyHObpGh+bth4O2ZmOZK4bZ4AAZAfTGLqBqNmwJ329aZzVpJs6DzpkojFCi0QFYKRgrPIPL0mTNdxogMs5Q8ULSflXkMUnmZSzkqNgaH6OTLbkvuQjbxw6BMNn2VLvQ6ri6iaAoSwgyD0XYvEDGujYW6ZP0sKgAC4JV1Ij71C/p9iiJUVYHEqYTTLSrd413kJQiEaO2F81CPWwOirxsBiknTWjyvRcH/FBiHLcrBG6ToOxm7ELfQ7JD+Ag/Hlbh9jAHk3kkT9WVwcrfeWfd4ulMkXaL2w3UvPkNCB3nmmcqtcFcojs4lrPDPO+lJ+zTBjupty/TwmzbUrza15jzjkFQ1xfMT0yS0Dr8zOH39dYHUw0TmEx0h85JH9FHaOQo4u8J7TeQyK+6OaHuj927bNTSBk23FB0OAOzbaqdTOlM3hgby8=
