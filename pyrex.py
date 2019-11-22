@@ -30,6 +30,7 @@ import stat
 import hashlib
 import json
 import tempfile
+import contextlib
 
 VERSION = "0.0.4"
 
@@ -784,6 +785,20 @@ def main():
         print(val)
         return 0
 
+    def mkconfig(args):
+        @contextlib.contextmanager
+        def get_output_file():
+            if args.output == "-":
+                yield sys.stdout
+            else:
+                with open(args.output, "w") as f:
+                    yield f
+
+        with get_output_file() as f:
+            f.write(read_default_config(False))
+
+        return 0
+
     subparser_args = {}
     if sys.version_info >= (3, 7, 0):
         subparser_args["required"] = True
@@ -849,6 +864,17 @@ def main():
         "var", metavar="SECTION:NAME", help="Config variable to get"
     )
     config_get_parser.set_defaults(func=config_get)
+
+    mkconfig_parser = subparsers.add_parser(
+        "mkconfig", help="Create a default Pyrex configuration"
+    )
+    mkconfig_parser.add_argument(
+        "output",
+        default="-",
+        nargs="?",
+        help="Output file. Use '-' for standard out. Default is %(default)s",
+    )
+    mkconfig_parser.set_defaults(func=mkconfig)
 
     args = parser.parse_args()
 
