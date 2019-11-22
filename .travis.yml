@@ -27,9 +27,13 @@ before_install:
   sudo mkdir -p /etc/containers/
   echo -e "[registries.search]\nregistries = ['docker.io']\n" | sudo tee /etc/containers/registries.conf
   echo '{ "features": { "buildkit": true } }' | sudo tee /etc/docker/daemon.json
-  sudo apt-get -y -o Dpkg::Options::=--force-confnew -o Dpkg::Options::=--force-overwrite install docker-ce podman buildah zsh chrpath diffstat texinfo
+  sudo apt-get -y -o Dpkg::Options::=--force-confnew -o Dpkg::Options::=--force-overwrite install docker-ce podman buildah zsh chrpath diffstat texinfo liblz4-tool
 - docker info
 - podman info
+- |
+  if [ -f $TRAVIS_BUILD_DIR/.pyrex-cache/$TEST_IMAGE.lz4 ]; then
+    lz4 -dc $TRAVIS_BUILD_DIR/.pyrex-cache/$TEST_IMAGE.lz4 | docker load
+  fi
 install:
 - pip3 install coverage
 - pip3 install coveralls
@@ -47,6 +51,11 @@ script:
 after_success:
 - coverage3 combine
 - coveralls
+before_cache:
+- docker save garminpyrex/$TEST_IMAGE:ci-test | lz4 > $TRAVIS_BUILD_DIR/.pyrex-cache/$TEST_IMAGE.lz4
+cache:
+  directories:
+  - $TRAVIS_BUILD_DIR/.pyrex-cache/
 deploy:
 - provider: script
   skip_cleanup: true
