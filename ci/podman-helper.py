@@ -32,7 +32,7 @@ def forward():
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] != "build":
+    if len(sys.argv) < 2 or not (sys.argv[1] in ("build", "buildx")):
         forward()
 
     parser = argparse.ArgumentParser(description="Container build helper")
@@ -41,7 +41,9 @@ def main():
     (args, extra_args) = parser.parse_known_args(sys.argv[2:])
 
     try:
-        subprocess.check_call(["docker", "build", "-t", args.tag] + extra_args)
+        docker_args = ["docker", sys.argv[1]] + extra_args + ["-t", args.tag]
+        print(docker_args)
+        subprocess.check_call(docker_args)
         subprocess.check_call(["podman", "pull", "docker-daemon:%s" % args.tag])
     except subprocess.CalledProcessError as e:
         return e.returncode

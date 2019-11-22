@@ -47,9 +47,14 @@ def main():
     else:
         provider = args.provider
 
+    cache_dir = "%s/.pyrex-cache/" % os.environ["TRAVIS_BUILD_DIR"]
+
     docker_args = [
         provider,
+        "buildx",
         "build",
+        "--cache-from=type=local,src=%s" % cache_dir,
+        "--cache-to=type=local,dest=%s,mode=max" % cache_dir,
         "-t",
         "garminpyrex/%s:ci-test" % args.image,
         "-f",
@@ -61,6 +66,8 @@ def main():
         "--target",
         "pyrex-%s" % image_type,
     ]
+
+    print(docker_args)
 
     if args.quiet:
         p = subprocess.Popen(
