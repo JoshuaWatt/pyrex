@@ -31,6 +31,7 @@ before_install:
   sudo apt-get -y -o Dpkg::Options::=--force-confnew -o Dpkg::Options::=--force-overwrite install docker-ce podman buildah zsh chrpath diffstat texinfo
 - docker info
 - podman info
+- docker buildx use docker-container
 install:
 - pip3 install coverage
 - pip3 install coveralls
