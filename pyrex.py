@@ -44,6 +44,18 @@ PYREX_ROOT = os.path.dirname(THIS_SCRIPT)
 PYREX_CONFVERSION = "2"
 MINIMUM_DOCKER_VERSION = 17
 
+# Map OE corenames to image version
+CORENAME_IMAGES = {
+    "sumo": "ubuntu-16.04",
+    "thud": "ubuntu-18.04",
+    "warrior": "ubuntu-18.04",
+    "zeus": "ubuntu-18.04",
+    "dunfell": "ubuntu-18.04",
+    "gatesgarth": "ubuntu-20.04",
+    "hardknott": "ubuntu-20.04",
+    "honister": "ubuntu-20.04",
+}
+
 
 class Config(configparser.ConfigParser):
     def __init__(self, *args, **kwargs):
@@ -143,8 +155,33 @@ def get_image_id(config, image):
     )
 
 
-def build_image(config, build_config):
+def get_autoimage(config, oeroot):
+    if oeroot is not None:
+        try:
+            with open(os.path.join(oeroot, "meta", "conf", "layer.conf"), "r") as conf:
+                for l in conf:
+                    m = re.match(r'^LAYERSERIES_CORENAMES\s*=\s*"(?P<corenames>.*)"', l)
+                    if m is not None:
+                        corenames = m.group("corenames").split()
+
+                        for c in corenames:
+                            if c in CORENAME_IMAGES:
+                                return CORENAME_IMAGES[c]
+                        break
+        except FileNotFoundError:
+            pass
+
+    return config["config"]["autoimagefallback"]
+
+
+def build_image(config, build_config, oeroot=None):
     build_config.setdefault("build", {})
+
+    build_config["build"]["autoimage"] = get_autoimage(config, oeroot)
+
+    config["config"]["image"] = config["config"]["image"].replace(
+        "@autoimage@", build_config["build"]["autoimage"]
+    )
 
     engine = config["config"]["engine"]
 
@@ -871,6 +908,7 @@ def main():
         default=[],
         help="Pass additional environment variables if present in parent shell",
     )
+    capture_parser.add_argument("--oeroot", help="Set path to OpenEmbedded core")
     capture_parser.add_argument(
         "init", nargs="*", help="Initialization arguments", default=[]
     )

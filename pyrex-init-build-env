@@ -65,6 +65,7 @@ $PYREX_ROOT/pyrex.py capture \
 		-a PYREX_OEINIT "$PYREX_OEINIT" \
 		-e PYREXCONFFILE \
 		-e TEMPLATECONF \
+		--oeroot $(dirname "$PYREX_OEINIT") \
 		-- 9 "$@" \
 		9> $PYREX_TEMP_ENV_FILE
 if [ $? -ne 0 ]; then
