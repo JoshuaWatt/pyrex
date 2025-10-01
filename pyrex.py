@@ -33,6 +33,7 @@ import sys
 import tempfile
 import textwrap
 import types
+import urllib.parse
 
 VERSION = "1.10.0"
 
@@ -419,13 +420,13 @@ def prep_container(
     username = pwd.getpwuid(uid).pw_name
     groupname = grp.getgrgid(gid).gr_name
 
-    groups = ["%d:%s" % (gid, groupname)]
+    groups = ["%d:%s" % (gid, urllib.parse.quote(groupname))]
 
     for group in grp.getgrall():
         if group.gr_name == groupname:
             continue
         if username in group.gr_mem:
-            groups.append("%d:%s" % (group.gr_gid, group.gr_name))
+            groups.append("%d:%s" % (group.gr_gid, urllib.parse.quote(group.gr_name)))
 
     # These are "hidden" keys in pyrex.ini that aren't publicized, and
     # are primarily used for testing. Use they at your own risk, they

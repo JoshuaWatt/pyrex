@@ -28,6 +28,7 @@ import tempfile
 import threading
 import unittest
 import time
+import urllib.quote
 
 PYREX_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(PYREX_ROOT)
@@ -434,7 +435,7 @@ class PyrexImageType_base(PyrexTest):
         # Note: These config variables are intended for testing use only
         conf["run"]["uid"] = "1337"
         conf["run"]["username"] = "theuser"
-        conf["run"]["groups"] = "7331:thegroup 7332:othergroup"
+        conf["run"]["groups"] = "7331:thegroup 7332:othergroup 7333:" + urllib.parse.quote("group with space")
         conf["run"]["initcommand"] = ""
         conf.write_conf()
 

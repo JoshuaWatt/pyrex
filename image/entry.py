@@ -20,6 +20,7 @@ import pwd
 import sys
 import subprocess
 import signal
+import urllib.parse
 
 
 def get_var(name):
@@ -60,7 +61,7 @@ def main():
     groups = []
     for s in get_var("PYREX_GROUPS").split():
         gid, name = s.split(":")
-        groups.append((int(gid), name))
+        groups.append((int(gid), urllib.parse.unquote(name)))
 
     primarygid, primarygroup = groups[0]
 
